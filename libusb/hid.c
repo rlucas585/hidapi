@@ -1474,7 +1474,7 @@ int HID_API_EXPORT_CALL hid_get_indexed_string(hid_device *dev, int string_index
 HID_API_EXPORT const wchar_t * HID_API_CALL  hid_error(hid_device *dev)
 {
 	(void)dev;
-	return L"hid_error is not implemented yet";
+	return L"hid_error is not implemented yet (RLUCAS TEST LINE)";
 }
 
 

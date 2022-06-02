@@ -26,3 +26,7 @@ libtool
 
 # Qt Creator
 CMakeLists.txt.user
+
+# CMake dirs
+.cache/
+build/
