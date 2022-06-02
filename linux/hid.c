@@ -159,11 +159,7 @@ static void register_global_error_format(const char *format, ...)
 	register_global_error(msg);
 }
 
-/* Set the last error for a device to be reported by hid_error(device).
- * The given error message will be copied (and decoded according to the
- * currently locale, so do not pass in string constants).
- * The last stored global error message is freed.
- * Use register_device_error(device, NULL) to indicate "no error". */
+/* Register an error string to a device, for reporting with hid_error(device) */
 static void register_device_error(hid_device *dev, const char *msg)
 {
 	if (dev->last_error_str)

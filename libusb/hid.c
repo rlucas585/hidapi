@@ -174,6 +174,8 @@ struct hid_device_ {
 	/* List of received input reports. */
 	struct input_report *input_reports;
 
+    wchar_t *last_error_str;
+
 	/* Was kernel driver detached by libusb */
 #ifdef DETACH_KERNEL_DRIVER
 	int is_driver_detached;
@@ -186,6 +188,10 @@ static struct hid_api_version api_version = {
 	.patch = HID_API_VERSION_PATCH
 };
 
+/* Global error message that is not specific to a device, e.g. for
+   hid_open(). It is thread-local like errno. */
+__thread wchar_t *last_global_error_str = NULL;
+
 static libusb_context *usb_context = NULL;
 
 uint16_t get_usb_code_for_current_locale(void);
@@ -195,12 +201,34 @@ static hid_device *new_hid_device(void)
 {
 	hid_device *dev = (hid_device*) calloc(1, sizeof(hid_device));
 	dev->blocking = 1;
+    dev->last_error_str = NULL;
 
 	pthread_mutex_init(&dev->mutex, NULL);
 	pthread_cond_init(&dev->condition, NULL);
 	pthread_barrier_init(&dev->barrier, NULL, 2);
 
 	return dev;
+}
+
+/* The caller must free the returned string with free(). */
+static wchar_t *utf8_to_wchar_t(const char *utf8)
+{
+    wchar_t *ret = NULL;
+
+    // If `utf8` is erroneously supplied as NULL
+    if (!utf8) {
+        utf8 = "(null)";
+    }
+
+    size_t wlen = mbstowcs(NULL, utf8, 0);
+    if ((size_t) -1 == wlen) {
+        return wcsdup(L"");
+    }
+    ret = (wchar_t*) calloc(wlen+1, sizeof(wchar_t));
+    mbstowcs(ret, utf8, wlen+1);
+    ret[wlen] = 0x0000;
+
+    return ret;
 }
 
 static void free_hid_device(hid_device *dev)
@@ -214,13 +242,53 @@ static void free_hid_device(hid_device *dev)
 	free(dev);
 }
 
-#if 0
-/*TODO: Implement this function on hidapi/libusb.. */
-static void register_error(hid_device *dev, const char *op)
+/* Set the last global error to be reported by hid_error
+ * Use register_global_error(NULL) to indicate "no error". */
+static void register_global_error(const char *msg)
 {
+	if (last_global_error_str)
+		free(last_global_error_str);
 
+	last_global_error_str = utf8_to_wchar_t(msg);
 }
-#endif
+
+/* See register_global_error, but you can pass a format string into this function.
+ * Error message size is limited to a maximum of 100 characters */
+static void register_global_error_format(const char *format, ...)
+{
+	va_list args;
+	va_start(args, format);
+
+	char msg[100];
+	vsnprintf(msg, sizeof(msg), format, args);
+
+	va_end(args);
+
+	register_global_error(msg);
+}
+
+/* Register an error string to a device, for reporting with hid_error(device) */
+static void register_device_error(hid_device *dev, const char *msg)
+{
+    if (dev->last_error_str)
+        free(dev->last_error_str);
+    dev->last_error_str = utf8_to_wchar_t(msg);
+}
+
+/* See register_device_error, but you can pass a format string into this function.
+ * Error message size is limited to a maximum of 100 characters */
+static void register_device_error_format(hid_device *dev, const char *format, ...)
+{
+    va_list args;
+    va_start(args, format);
+
+    char msg[100];
+    vsnprintf(msg, sizeof(msg), format, args);
+
+    va_end(args);
+
+    register_device_error(dev, msg);
+}
 
 #ifdef INVASIVE_GET_USAGE
 /* Get bytes from a HID Report Descriptor.
@@ -525,9 +593,13 @@ int HID_API_EXPORT hid_init(void)
 	if (!usb_context) {
 		const char *locale;
 
+        int error_code = libusb_init(&usb_context);
+
 		/* Init Libusb */
-		if (libusb_init(&usb_context))
+		if (error_code) {
+            register_global_error_format("Failed to initialize libusb: '%s'", libusb_error_name(error_code));
 			return -1;
+        }
 
 		/* Set the locale if it's not set. */
 		locale = setlocale(LC_CTYPE, NULL);
@@ -544,6 +616,9 @@ int HID_API_EXPORT hid_exit(void)
 		libusb_exit(usb_context);
 		usb_context = NULL;
 	}
+
+    /* Free global error message */
+    register_global_error(NULL);
 
 	return 0;
 }
@@ -563,8 +638,10 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 		return NULL;
 
 	num_devs = libusb_get_device_list(usb_context, &devs);
-	if (num_devs < 0)
+	if (num_devs < 0) {
+        register_global_error_format("'libusb_get_device_list error: '%s'", libusb_strerror(num_devs));
 		return NULL;
+    }
 	while ((dev = devs[i++]) != NULL) {
 		struct libusb_device_descriptor desc;
 		struct libusb_config_descriptor *conf_desc = NULL;
@@ -740,6 +817,11 @@ hid_device * hid_open(unsigned short vendor_id, unsigned short product_id, const
 	hid_device *handle = NULL;
 
 	devs = hid_enumerate(vendor_id, product_id);
+
+    if (!devs) {
+        return NULL;
+    }
+
 	cur_dev = devs;
 	while (cur_dev) {
 		if (cur_dev->vendor_id == vendor_id &&
@@ -762,7 +844,10 @@ hid_device * hid_open(unsigned short vendor_id, unsigned short product_id, const
 	if (path_to_open) {
 		/* Open the device */
 		handle = hid_open_path(path_to_open);
-	}
+	} else {
+        if (!last_global_error_str)
+            register_global_error_format("No such device found with '(VID:PID) = (%x:%x)'", vendor_id, product_id);
+    }
 
 	hid_free_enumeration(devs);
 
@@ -909,6 +994,8 @@ static void *read_thread(void *param)
 }
 
 
+/* Initialize a hid_device with default values
+ * Returns 0 and sets global_error in event of failure. */
 static int hidapi_initialize_device(hid_device *dev, const struct libusb_interface_descriptor *intf_desc)
 {
 	int i =0;
@@ -923,6 +1010,7 @@ static int hidapi_initialize_device(hid_device *dev, const struct libusb_interfa
 	if (libusb_kernel_driver_active(dev->device_handle, intf_desc->bInterfaceNumber) == 1) {
 		res = libusb_detach_kernel_driver(dev->device_handle, intf_desc->bInterfaceNumber);
 		if (res < 0) {
+            register_global_error_format("libusb_detach_kernel_driver error: '%s'", libusb_error_name(res));
 			LOG("Unable to detach Kernel Driver\n");
 			return 0;
 		}
@@ -934,6 +1022,7 @@ static int hidapi_initialize_device(hid_device *dev, const struct libusb_interfa
 #endif
 	res = libusb_claim_interface(dev->device_handle, intf_desc->bInterfaceNumber);
 	if (res < 0) {
+        register_global_error_format("libusb_claim_interface error: '%s'", libusb_error_name(res));
 		LOG("can't claim interface %d: %d\n", intf_desc->bInterfaceNumber, res);
 		return 0;
 	}
@@ -982,6 +1071,8 @@ static int hidapi_initialize_device(hid_device *dev, const struct libusb_interfa
 		}
 	}
 
+    dev->last_error_str = NULL;
+
 	pthread_create(&dev->thread, NULL, read_thread, dev);
 
 	/* Wait here for the read thread to be initialized. */
@@ -992,6 +1083,9 @@ static int hidapi_initialize_device(hid_device *dev, const struct libusb_interfa
 
 hid_device * HID_API_EXPORT hid_open_path(const char *path)
 {
+    /* Set global error to none */
+    register_global_error(NULL);
+
 	hid_device *dev = NULL;
 
 	libusb_device **devs = NULL;
@@ -999,13 +1093,18 @@ hid_device * HID_API_EXPORT hid_open_path(const char *path)
 	int res = 0;
 	int d = 0;
 	int good_open = 0;
+    ssize_t num_devs;
 
 	if(hid_init() < 0)
 		return NULL;
 
 	dev = new_hid_device();
 
-	libusb_get_device_list(usb_context, &devs);
+	num_devs = libusb_get_device_list(usb_context, &devs);
+    if (num_devs < 0) {
+        register_global_error_format("'libusb_get_device_list error: '%s'", libusb_strerror(num_devs));
+		return NULL;
+    }
 	while ((usb_dev = devs[d++]) != NULL && !good_open) {
 		struct libusb_config_descriptor *conf_desc = NULL;
 		int j,k;
@@ -1025,6 +1124,7 @@ hid_device * HID_API_EXPORT hid_open_path(const char *path)
 						res = libusb_open(usb_dev, &dev->device_handle);
 						if (res < 0) {
 							LOG("can't open device\n");
+                            register_global_error_format("libusb_open error: '%s'", libusb_error_name(res));
 							free(dev_path);
 							break;
 						}
@@ -1048,6 +1148,10 @@ hid_device * HID_API_EXPORT hid_open_path(const char *path)
 	else {
 		/* Unable to open any devices. */
 		free_hid_device(dev);
+
+        if (!last_global_error_str)
+            register_global_error("Unable to open any devices in hid_open_path");
+
 		return NULL;
 	}
 }
@@ -1134,6 +1238,8 @@ int HID_API_EXPORT hid_write(hid_device *dev, const unsigned char *data, size_t 
 	int skipped_report_id = 0;
 
 	if (!data || (length ==0)) {
+        errno = EINVAL;
+        register_device_error(dev, "Invalid argument supplied to hid_write: *data must not be NULL");
 		return -1;
 	}
 
@@ -1156,8 +1262,10 @@ int HID_API_EXPORT hid_write(hid_device *dev, const unsigned char *data, size_t 
 			(unsigned char *)data, length,
 			1000/*timeout millis*/);
 
-		if (res < 0)
+		if (res < 0) {
+            register_device_error_format(dev, "libusb_control_transfer error: '%s'", libusb_error_name(res));
 			return -1;
+        }
 
 		if (skipped_report_id)
 			length++;
@@ -1173,8 +1281,10 @@ int HID_API_EXPORT hid_write(hid_device *dev, const unsigned char *data, size_t 
 			length,
 			&actual_length, 1000);
 
-		if (res < 0)
+		if (res < 0) {
+            register_device_error_format(dev, "libusb_interrupt_transfer error: '%s'", libusb_error_name(res));
 			return -1;
+        }
 
 		if (skipped_report_id)
 			actual_length++;
@@ -1234,6 +1344,8 @@ int HID_API_EXPORT hid_read_timeout(hid_device *dev, unsigned char *data, size_t
 		/* This means the device has been disconnected.
 		   An error code of -1 should be returned. */
 		bytes_read = -1;
+
+        register_device_error(dev, "Device has been disconnected");
 		goto ret;
 	}
 
