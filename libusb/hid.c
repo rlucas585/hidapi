@@ -1439,8 +1439,10 @@ int HID_API_EXPORT hid_send_feature_report(hid_device *dev, const unsigned char 
 		(unsigned char *)data, length,
 		1000/*timeout millis*/);
 
-	if (res < 0)
+	if (res < 0) {
+        register_device_error_format(dev, "libusb_control_transfer error: '%s'", libusb_error_name(res));
 		return -1;
+    }
 
 	/* Account for the report ID */
 	if (skipped_report_id)
@@ -1470,8 +1472,10 @@ int HID_API_EXPORT hid_get_feature_report(hid_device *dev, unsigned char *data, 
 		(unsigned char *)data, length,
 		1000/*timeout millis*/);
 
-	if (res < 0)
+	if (res < 0) {
+        register_device_error_format(dev, "libusb_control_transfer error: '%s'", libusb_error_name(res));
 		return -1;
+    }
 
 	if (skipped_report_id)
 		res++;
@@ -1500,8 +1504,10 @@ int HID_API_EXPORT HID_API_CALL hid_get_input_report(hid_device *dev, unsigned c
 		(unsigned char *)data, length,
 		1000/*timeout millis*/);
 
-	if (res < 0)
-		return -1;
+    if (res < 0) {
+        register_device_error_format(dev, "libusb_control_transfer error: '%s'", libusb_error_name(res));
+        return -1;
+    }
 
 	if (skipped_report_id)
 		res++;
@@ -1533,8 +1539,10 @@ void HID_API_EXPORT hid_close(hid_device *dev)
 #ifdef DETACH_KERNEL_DRIVER
 	if (dev->is_driver_detached) {
 		int res = libusb_attach_kernel_driver(dev->device_handle, dev->interface);
-		if (res < 0)
+		if (res < 0) {
+            register_global_error_format("libusb_attach_kernel_driver error: '%s'", libusb_error_name(res));
 			LOG("Failed to reattach the driver to kernel.\n");
+        }
 	}
 #endif
 
