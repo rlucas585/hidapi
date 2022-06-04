@@ -29,6 +29,7 @@
 #include <ctype.h>
 #include <locale.h>
 #include <errno.h>
+#include <stdarg.h>
 
 /* Unix */
 #include <unistd.h>
