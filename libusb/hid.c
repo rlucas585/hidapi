@@ -794,6 +794,10 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 
 	libusb_free_device_list(devs, 1);
 
+    if (!root) {
+        register_global_error("No HID devices found by hid_enumerate");
+    }
+
 	return root;
 }
 
