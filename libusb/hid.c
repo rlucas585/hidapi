@@ -663,11 +663,6 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 	if (num_devs < 0) {
         register_global_error_format("libusb_get_device_list error: '%s'", libusb_strerror(num_devs));
 		return NULL;
-    } else if (num_devs == 0) {
-        register_global_error("libusb_get_device_list returned with 0 devices. Attempting reinitialization");
-
-        if (hid_reinitialize() < 0)
-            return NULL;
     }
 	while ((dev = devs[i++]) != NULL) {
 		struct libusb_device_descriptor desc;
@@ -821,7 +816,10 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 	libusb_free_device_list(devs, 1);
 
     if (!root) {
-        register_global_error("No HID devices found by hid_enumerate");
+        register_global_error("hid_enumerate found 0 devices. Attempting reinitialization");
+
+        if (hid_reinitialize() < 0)
+            return NULL;
     }
 
 	return root;
