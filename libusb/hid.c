@@ -611,6 +611,27 @@ int HID_API_EXPORT hid_init(void)
 	return 0;
 }
 
+/* Reinitialize HID if there is reason to suspect that the libusb context has
+ * become invalidated due to a USB hub restart. */
+static int hid_reinitialize(void) {
+    /* exit the hid context */
+    if (usb_context) {
+        libusb_exit(usb_context);
+        usb_context = NULL;
+    }
+
+    /* restart the hid context */
+    int error_code = libusb_init(&usb_context);
+
+    /* Reinit Libusb */
+    if (error_code) {
+        register_global_error_format("Failed to re-initialize libusb: '%s'", libusb_error_name(error_code));
+        return -1;
+    }
+
+    return 0;
+}
+
 int HID_API_EXPORT hid_exit(void)
 {
 	if (usb_context) {
@@ -640,8 +661,13 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 
 	num_devs = libusb_get_device_list(usb_context, &devs);
 	if (num_devs < 0) {
-        register_global_error_format("'libusb_get_device_list error: '%s'", libusb_strerror(num_devs));
+        register_global_error_format("libusb_get_device_list error: '%s'", libusb_strerror(num_devs));
 		return NULL;
+    } else if (num_devs == 0) {
+        register_global_error("libusb_get_device_list returned with 0 devices. Attempting reinitialization");
+
+        if (hid_reinitialize() < 0)
+            return NULL;
     }
 	while ((dev = devs[i++]) != NULL) {
 		struct libusb_device_descriptor desc;
