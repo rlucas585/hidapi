@@ -652,7 +652,7 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 	libusb_device_handle *handle;
 	ssize_t num_devs;
 	int i = 0;
-    static size_t number_reinitializations = 0;
+    static size_t number_failures = 0;
 
 	struct hid_device_info *root = NULL; /* return object */
 	struct hid_device_info *cur_dev = NULL;
@@ -817,11 +817,13 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 	libusb_free_device_list(devs, 1);
 
     if (!root) {
-        number_reinitializations += 1;
-        register_global_error_format("hid_enumerate found 0 devices. Attempting reinitialization (Reset count: %zu)", number_reinitializations);
+        number_failures += 1;
+        register_global_error_format("hid_enumerate found 0 devices. (Times failed: %zu). HID is NOT reinitializing.", number_failures);
 
-        if (hid_reinitialize() < 0)
-            return NULL;
+        /* if (hid_reinitialize() < 0) */
+        /*     return NULL; */
+    } else {
+        number_failures = 0;
     }
 
 	return root;
